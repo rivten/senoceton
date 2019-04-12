@@ -558,6 +558,7 @@ struct BufHdr
 
 #define MAX(a, b) (((a) >= (b)) ? (a) : (b))
 #define CLAMP_MIN(x, min) MAX(x, min)
+#define IS_POW2(x) (((x) != 0) && ((x) & ((x) - 1)) == 0)
 
 void *buf__grow(const void *buf, size_t new_len, size_t elem_size) {
     Assert(buf_cap(buf) <= (SIZE_MAX - 1)/2);
@@ -575,3 +576,163 @@ void *buf__grow(const void *buf, size_t new_len, size_t elem_size) {
     new_hdr->cap = new_cap;
     return new_hdr->buf;
 }
+
+// NOTE(hugo): Hash map
+
+u64 hash_u64(u64 x)
+{
+    x *= 0xff51afd7ed558ccd;
+    x ^= x >> 32;
+    return(x);
+}
+
+u64 hash_ptr(const void* ptr)
+{
+    return(hash_u64((u64)ptr));
+}
+
+u64 hash_mix(u64 x, u64 y)
+{
+    x ^= y;
+    x *= 0xff51afd7ed558ccd;
+    x ^= 32;
+    return(x);
+}
+
+u64 hash_bytes(const void* ptr, size_t len)
+{
+    u64 x = 0xcbf29ce484222325;
+    const char* buf = (const char*)ptr;
+    for(size_t i = 0; i < len; ++i)
+    {
+        x ^= buf[i];
+        x *= 0x100000001b3;
+        x ^= x >> 32;
+    }
+    return(x);
+}
+
+struct map
+{
+    u64* Keys;
+    u64* Vals;
+    size_t Len;
+    size_t Cap;
+};
+
+u64 map_get_u64_from_u64(map* Map, u64 Key)
+{
+    if(Map->Len == 0)
+    {
+        return(0);
+    }
+    Assert(IS_POW2(Map->Cap));
+    size_t i = (size_t)hash_u64(Key);
+    Assert(Map->Len < Map->Cap);
+    for(;;)
+    {
+        i &= (Map->Cap - 1);
+        if(Map->Keys[i] == Key)
+        {
+            return(Map->Vals[i]);
+        }
+        else if(!Map->Keys[i])
+        {
+            return(0);
+        }
+        ++i;
+    }
+}
+
+void map_put_u64_from_u64(map* Map, u64 Key, u64 Val);
+
+void map_grow(map* Map, size_t NewCap)
+{
+    NewCap = CLAMP_MIN(NewCap, 16);
+    map NewMap = {};
+    NewMap.Keys = AllocateArray(u64, NewCap);
+    NewMap.Vals = AllocateArray(u64, NewCap);
+
+    for(size_t i = 0; i < Map->Cap; ++i)
+    {
+        if(Map->Keys[i])
+        {
+            map_put_u64_from_u64(&NewMap, Map->Keys[i], Map->Vals[i]);
+        }
+    }
+    Free((void *)Map->Keys);
+    Free(Map->Vals);
+    *Map = NewMap;
+}
+
+void map_put_u64_from_u64(map* Map, u64 Key, u64 Val)
+{
+    Assert(Key);
+    if(!Val)
+    {
+        return;
+    }
+    if(2 * Map->Len >= Map->Cap)
+    {
+        map_grow(Map, 2 * Map->Cap);
+    }
+    Assert(2 * Map->Len < Map->Cap);
+    Assert(IS_POW2(Map->Cap));
+    size_t i = (size_t)hash_u64(Key);
+    for(;;)
+    {
+        i &= (Map->Cap - 1);
+        if(!Map->Keys[i])
+        {
+            ++Map->Len;
+            Map->Keys[i] = Key;
+            Map->Vals[i] = Val;
+            return;
+        }
+        else if(Map->Keys[i] == Key)
+        {
+            Map->Vals[i] = Val;
+            return;
+        }
+        ++i;
+    }
+}
+
+void* map_get(map* Map, const void* Key)
+{
+    return((void *)map_get_u64_from_u64(Map, (u64)Key));
+}
+
+void map_put(map* Map, const void* Key, void* Val)
+{
+    map_put_u64_from_u64(Map, (u64)Key, (u64)Val);
+}
+
+void* map_get_from_u64(map* Map, u64 Key)
+{
+    return((void *)map_get_u64_from_u64(Map, Key));
+}
+
+void map_put_from_u64(map* Map, u64 Key, void* Val)
+{
+    map_put_u64_from_u64(Map, Key, (u64)Val);
+}
+
+u64 map_get_u64(map* Map, void* Key)
+{
+    return(map_get_u64_from_u64(Map, (u64)Key));
+}
+
+void map_put_u64(map* Map, void* Key, u64 Val)
+{
+    map_put_u64_from_u64(Map, (u64)Key, Val);
+}
+
+// NOTE(hugo): String interning
+
+struct intern
+{
+    size_t Len;
+    struct intern* Next;
+    char* Str;
+};
